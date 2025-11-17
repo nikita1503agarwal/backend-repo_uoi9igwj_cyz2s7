@@ -1,8 +1,13 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List
 
-app = FastAPI()
+from database import db, create_document, get_documents
+from schemas import MenuItem, Order, OrderItem
+
+app = FastAPI(title="Catering Online Ordering API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,11 +19,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
-
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+    return {"message": "Catering API is running"}
 
 @app.get("/test")
 def test_database():
@@ -31,39 +32,92 @@ def test_database():
         "connection_status": "Not Connected",
         "collections": []
     }
-    
+
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
             response["database"] = "✅ Available"
             response["database_url"] = "✅ Configured"
             response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
             response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
             try:
                 collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = collections[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
                 response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
         else:
             response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
+
     except Exception as e:
         response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
+
     import os
     response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
+
     return response
 
+# --------- Menu Endpoints ---------
+
+@app.post("/api/menu", response_model=dict)
+def create_menu_item(item: MenuItem):
+    try:
+        new_id = create_document("menuitem", item)
+        return {"id": new_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/menu", response_model=List[dict])
+def list_menu_items():
+    try:
+        items = get_documents("menuitem")
+        # Convert ObjectId to string for _id
+        for it in items:
+            if "_id" in it:
+                it["id"] = str(it.pop("_id"))
+        return items
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --------- Order Endpoints ---------
+
+class CreateOrder(BaseModel):
+    customer_name: str
+    phone: str
+    address: str
+    notes: str | None = None
+    items: List[OrderItem]
+
+@app.post("/api/orders", response_model=dict)
+def create_order(payload: CreateOrder):
+    try:
+        # compute total
+        total = 0.0
+        for it in payload.items:
+            total += it.price * it.quantity
+        order = Order(
+            customer_name=payload.customer_name,
+            phone=payload.phone,
+            address=payload.address,
+            notes=payload.notes,
+            items=payload.items,
+            total=round(total, 2),
+        )
+        new_id = create_document("order", order)
+        return {"id": new_id, "total": order.total, "status": order.status}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/orders", response_model=List[dict])
+def list_orders():
+    try:
+        orders = get_documents("order")
+        for o in orders:
+            if "_id" in o:
+                o["id"] = str(o.pop("_id"))
+        return orders
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
